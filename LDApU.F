@@ -8,6 +8,8 @@
 ! in case you can not reach Olivier you might contact 
 !  Georg.Kresse@univie.ac.at
 !
+!  NLEP calc. implemented by T. Kagawa in Nov. 2013
+!
 !***********************************************************************
 
       MODULE LDAPLUSU_MODULE
@@ -25,11 +27,8 @@
       INTEGER, PRIVATE, SAVE :: NCDIJ      
       INTEGER, PRIVATE, SAVE :: PRINTOCC=0                    ! IF /= 0 print test information
       INTEGER, PRIVATE, SAVE :: TYPE_POT                      ! type of LDA+U potential (1 or 2)  
-      INTEGER, PRIVATE, ALLOCATABLE,SAVE :: LANG_LDAPLUSU(:)  ! l-quantum number for LDA+U correction per type
 
       REAL(q), PRIVATE, SAVE :: DOUBLEC_LDAPLUSU=0._q         ! total LDA+U double counting energy
-      REAL(q), PRIVATE, ALLOCATABLE, SAVE :: U(:)             ! U parameter per type
-      REAL(q), PRIVATE, ALLOCATABLE, SAVE :: J(:)             ! J parameter per type
                                                
       OVERLAP , PRIVATE, ALLOCATABLE :: OCC_MAT(:,:,:)
       OVERLAP , PRIVATE, ALLOCATABLE :: OCC_MAT_ALL(:,:,:,:)
@@ -38,6 +37,17 @@
 
       COMPLEX(q), PRIVATE, SAVE :: V(7,7,7,7)
         
+!***********************************************************************
+!
+!     For NLEP calculations
+!
+!***********************************************************************
+      INTEGER, PRIVATE, ALLOCATABLE, SAVE :: LANG_LDAPLUSU(:,:)  ! 
+      INTEGER, PRIVATE, ALLOCATABLE, SAVE :: LU_OCCZ(:,:)        ! 
+      REAL(q), PRIVATE, ALLOCATABLE, SAVE :: U(:,:)              ! U parameter per type
+      REAL(q), PRIVATE, ALLOCATABLE, SAVE :: J(:,:)              ! J parameter per type
+      OVERLAP , PRIVATE, ALLOCATABLE :: OCC_MAT_AL2(:,:,:,:)
+
       CONTAINS
 
 !**********************************************************************
@@ -56,7 +66,7 @@
 !**********************************************************************
 
       SUBROUTINE LDAU_READER(NTYP,IU5,IU0) 
-      USE base
+   
       USE vaspxml
    
       IMPLICIT NONE 
@@ -70,13 +80,13 @@
       CHARACTER (1) :: CHARAC
 
       LOPEN=.FALSE.
-      OPEN(UNIT=IU5,FILE=INCAR,STATUS='OLD')
+      OPEN(UNIT=IU5,FILE='INCAR',STATUS='OLD')
 
 !=======================================================================
 !    read LDA+U parameters from INCAR  
 !=======================================================================
       TLDA_U=.FALSE.
-      CALL RDATAB(LOPEN,INCAR,IU5,'LDAU','=','#',';','L', &
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAU','=','#',';','L', &
      &   IDUM,RDUM,CDUM,TLDA_U,CHARAC,N,1,IERR)
 
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<1))) THEN
@@ -89,7 +99,7 @@
       CALL XML_INCAR('LDAU','L',IDUM,RDUM,CDUM,TLDA_U,CHARAC,N)
        
       TYPE_POT=2
-      CALL RDATAB(LOPEN,INCAR,IU5,'LDAUTYPE','=','#',';','I', &
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAUTYPE','=','#',';','I', &
      &   TYPE_POT,RDUM,CDUM,LDUM,CHARAC,N,1,IERR)
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<1))) THEN
          IF (IU0>=0) THEN
@@ -101,11 +111,16 @@
       
       CALL XML_INCAR_V('LDAUTYPE','I',TYPE_POT,RDUM,CDUM,LDUM,CHARAC,N)
 
-      ALLOCATE(LANG_LDAPLUSU(NTYP),U(NTYP),J(NTYP))
+      ALLOCATE(LANG_LDAPLUSU(4,NTYP),U(4,NTYP),J(4,NTYP),LU_OCCZ(4,NTYP))
 
-      LANG_LDAPLUSU=2
-      CALL RDATAB(LOPEN,INCAR,IU5,'LDAUL','=','#',';','I', &
-     &   LANG_LDAPLUSU,RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      LANG_LDAPLUSU=-1
+!***********************************************************************
+!   
+!    LDAUL
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAUL','=','#',';','I', &
+     &   LANG_LDAPLUSU(1,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
          IF (IU0>=0) THEN
             WRITE(IU0,*)'Error reading item ''LDAUL'' from file INCAR.'
@@ -113,8 +128,56 @@
          ENDIF
          TLDA_U=.FALSE.
       ENDIF
-      CALL XML_INCAR_V('LDAUL','I',LANG_LDAPLUSU,RDUM,CDUM,LDUM,CHARAC,N)
+      CALL XML_INCAR_V('LDAUL','I',LANG_LDAPLUSU(1,:),RDUM,CDUM,LDUM,CHARAC,N)
    
+!***********************************************************************
+!   
+!    LDUL2
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUL2','=','#',';','I', &
+     &   LANG_LDAPLUSU(2,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUL2'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUL2','I',LANG_LDAPLUSU(2,:),RDUM,CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUL3
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUL3','=','#',';','I', &
+     &   LANG_LDAPLUSU(3,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUL3'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUL3','I',LANG_LDAPLUSU(3,:),RDUM,CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUL4
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUL4','=','#',';','I', &
+     &   LANG_LDAPLUSU(4,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUL4'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUL4','I',LANG_LDAPLUSU(4,:),RDUM,CDUM,LDUM,CHARAC,N)
+
 !       DO N=1,NTYP
 !       IF (LANG_LDAPLUSU(N) /= 2 .AND. LANG_LDAPLUSU(N) /= -1 ) THEN
 !          IF (IU0>=0) &
@@ -124,8 +187,13 @@
 !       ENDDO
 
       U=0
-      CALL RDATAB(LOPEN,INCAR,IU5,'LDAUU','=','#',';','F', &
-     &   IDUM,U,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+!***********************************************************************
+!   
+!    LDAUU
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAUU','=','#',';','F', &
+     &   IDUM,U(1,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
          IF (IU0>=0) THEN
             WRITE(IU0,*)'Error reading item ''LDAUU'' from file INCAR.'
@@ -133,11 +201,65 @@
          ENDIF
          TLDA_U=.FALSE.
       ENDIF
-      CALL XML_INCAR_V('LDAUU','F',IDUM,U,CDUM,LDUM,CHARAC,N)
+      CALL XML_INCAR_V('LDAUU','F',IDUM,U(1,:),CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUU2
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUU2','=','#',';','F', &
+     &   IDUM,U(2,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUU2'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUU2','F',IDUM,U(2,:),CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUU3
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUU3','=','#',';','F', &
+     &   IDUM,U(3,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUU3'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUU3','F',IDUM,U(3,:),CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUU4
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUU4','=','#',';','F', &
+     &   IDUM,U(4,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUU4'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUU4','F',IDUM,U(4,:),CDUM,LDUM,CHARAC,N)
+
 
       J=0
-      CALL RDATAB(LOPEN,INCAR,IU5,'LDAUJ','=','#',';','F', &
-     &   IDUM,J,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+!***********************************************************************
+!   
+!    LDAUJ
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAUJ','=','#',';','F', &
+     &   IDUM,J(1,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
          IF (IU0>=0) THEN
             WRITE(IU0,*)'Error reading item ''LDAUJ'' from file INCAR.'
@@ -145,10 +267,123 @@
          ENDIF
          TLDA_U=.FALSE.
       ENDIF
-      CALL XML_INCAR_V('LDAUJ','F',IDUM,J,CDUM,LDUM,CHARAC,N)
+      CALL XML_INCAR_V('LDAUJ','F',IDUM,J(1,:),CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUJ2
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUJ2','=','#',';','F', &
+     &   IDUM,J(2,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUJ2'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUJ2','F',IDUM,J(2,:),CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUJ3
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUJ3','=','#',';','F', &
+     &   IDUM,J(3,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUJ3'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUJ3','F',IDUM,J(3,:),CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUJ4
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUJ4','=','#',';','F', &
+     &   IDUM,J(4,:),CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUJ4'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUJ4','F',IDUM,J(4,:),CDUM,LDUM,CHARAC,N)
+
+      LU_OCCZ=1
+!***********************************************************************
+!   
+!    LDAUO
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAUO','=','#',';','I', &
+     &   LU_OCCZ(1,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDAUO'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDAUO','I',LU_OCCZ(1,:),RDUM,CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUO2 
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUO2','=','#',';','I', &
+     &   LU_OCCZ(2,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUO2'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUO2','I',LU_OCCZ(2,:),RDUM,CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUO3
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUO3','=','#',';','I', &
+     &   LU_OCCZ(3,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUO3'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUO3','I',LU_OCCZ(3,:),RDUM,CDUM,LDUM,CHARAC,N)
+
+!***********************************************************************
+!   
+!    LDUO4 
+!
+!***********************************************************************
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDUO4','=','#',';','I', &
+     &   LU_OCCZ(4,:),RDUM,CDUM,LDUM,CHARAC,N,NTYP,IERR)
+      IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<NTYP))) THEN
+         IF (IU0>=0) THEN
+            WRITE(IU0,*)'Error reading item ''LDUO4'' from file INCAR.'
+            WRITE(IU0,*)'Error code was IERR=',IERR,' Found N=',N,' data items'
+         ENDIF
+         TLDA_U=.FALSE.
+      ENDIF
+      CALL XML_INCAR_V('LDUO4','I',LU_OCCZ(4,:),RDUM,CDUM,LDUM,CHARAC,N)
 
       PRINTOCC=0
-      CALL RDATAB(LOPEN,INCAR,IU5,'LDAUPRINT','=','#',';','I', &
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LDAUPRINT','=','#',';','I', &
      &   PRINTOCC,RDUM,CDUM,LDUM,CHARAC,N,1,IERR)
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<1))) THEN
          IF (IU0>=0) THEN
@@ -160,7 +395,7 @@
       CALL XML_INCAR('LDAUPRINT','I',PRINTOCC,RDUM,CDUM,LDUM,CHARAC,N)
 
       LORBMOM=.FALSE.
-      CALL RDATAB(LOPEN,INCAR,IU5,'LORBMOM','=','#',';','L', &
+      CALL RDATAB(LOPEN,'INCAR',IU5,'LORBMOM','=','#',';','L', &
      &   IDUM,RDUM,CDUM,LORBMOM,CHARAC,N,1,IERR)
 
       IF (((IERR/=0).AND.(IERR/=3)).OR.((IERR==0).AND.(N<1))) THEN
@@ -203,11 +438,11 @@
 !=======================================================================
 !  Sanity check: L(S)DA+U only implemented for PAW potentials
 !=======================================================================
-      DO ITYP=1,NTYP
-         IF (.NOT.ASSOCIATED(P(ITYP)%QPAW).AND.LANG_LDAPLUSU(ITYP)/=-1) THEN
-            CALL VTUTOR('S','NOLDAU',RDUM,1,IDUM,1,CDUM,1,LDUM,1,IU,IDIOT)
-         ENDIF
-      ENDDO
+!      DO ITYP=1,NTYP
+!         IF (.NOT.ASSOCIATED(P(ITYP)%QPAW).AND.LANG_LDAPLUSU(ITYP)/=-1) THEN
+!            CALL VTUTOR('S','NOLDAU',RDUM,1,IDUM,1,CDUM,1,LDUM,1,IU,IDIOT)
+!         ENDIF
+!      ENDDO
 
 !=======================================================================
 !  allocate objects for lda+u calculations         
@@ -222,6 +457,7 @@
 
       ALLOCATE(OVERLAP_AE_(LNMAX_,LNMAX_,NTYP),OCC_MAT(LMMAX_,LMMAX_,NCDIJ), &
      &          OCC_MAT_ALL(LMMAX_,LMMAX_,NCDIJ,NIONS)) 
+      ALLOCATE(OCC_MAT_AL2(LMMAX_,LMMAX_,NCDIJ,NIONS))
 
       OCC_MAT_ALL=0._q
       OVERLAP_AE_=0._q
@@ -243,19 +479,23 @@
 
       IMPLICIT NONE
 
-      INTEGER IU6
+      INTEGER IU6, luit
 
       IF (IU6>=0) THEN
          WRITE(IU6,100) TYPE_POT
-         WRITE(IU6,110) LANG_LDAPLUSU
-         WRITE(IU6,120) U
-         WRITE(IU6,130) J
+         do luit=1,4
+            WRITE(IU6,110) luit, LANG_LDAPLUSU(luit,:)
+            WRITE(IU6,120) luit, U(luit,:)
+            WRITE(IU6,130) luit, J(luit,:)
+            WRITE(IU6,140) luit, LU_OCCZ(luit,:)
+        end do
       ENDIF
       
   100 FORMAT(' LDA+U is selected, type is set to LDAUTYPE = ',I2)
-  110 FORMAT('   angular momentum for each species LDAUL = ',20I5)
-  120 FORMAT('   U (eV)           for each species LDAUU = ',20F5.1)
-  130 FORMAT('   J (eV)           for each species LDAUJ = ',20F5.1)
+  110 FORMAT('   angular momentum for each species, LDAU#',i3,' : L  = ',20I7)
+  120 FORMAT('   U (eV)           for each species, LDAU#',i3,' : U  = ',20F7.2)
+  130 FORMAT('   J (eV)           for each species, LDAU#',i3,' : J  = ',20F7.2)
+  140 FORMAT('   zero occupancy   for each species, LDAU#',i3,' : O  = ',20I7)
        
       END SUBROUTINE WRITE_LDApU
 
@@ -275,15 +515,18 @@
       REAL(q) :: RDUM
       COMPLEX(q)  :: CDUM
       CHARACTER (1) :: CHARAC
+      integer luit
  
       CALL XML_INCAR('LDAU','L',IDUM,RDUM,CDUM,TLDA_U,CHARAC,1)
 
       IF (.NOT.TLDA_U) RETURN
  
       CALL XML_INCAR_V('LDAUTYPE','I',TYPE_POT,RDUM,CDUM,LDUM,CHARAC,1)
-      CALL XML_INCAR_V('LDAUL','I',LANG_LDAPLUSU,RDUM,CDUM,LDUM,CHARAC,1)
-      CALL XML_INCAR_V('LDAUU','F',IDUM,U,CDUM,LDUM,CHARAC,1)
-      CALL XML_INCAR_V('LDAUJ','F',IDUM,J,CDUM,LDUM,CHARAC,1)
+      do luit=1,4
+         CALL XML_INCAR_V('LDAUL','I',LANG_LDAPLUSU(luit,:),RDUM,CDUM,LDUM,CHARAC,1)
+         CALL XML_INCAR_V('LDAUU','F',IDUM,U(luit,:),CDUM,LDUM,CHARAC,1)
+         CALL XML_INCAR_V('LDAUJ','F',IDUM,J(luit,:),CDUM,LDUM,CHARAC,1)
+      end do
       CALL XML_INCAR('LDAUPRINT','I',PRINTOCC,RDUM,CDUM,LDUM,CHARAC,1)
       END SUBROUTINE XML_WRITE_LDAU
 
@@ -359,6 +602,7 @@
       USE pseudo
       USE poscar
       USE radial
+      USE vaspxml
 
       IMPLICIT NONE
 
@@ -366,7 +610,7 @@
             
       INTEGER LMDIM
       INTEGER IATOM
-      INTEGER ITYP
+      INTEGER ITYP, luit
       
       REAL(q) DBLE_LDAU
 
@@ -381,12 +625,12 @@
       OCC_MAT_ALL(:,:,:,IATOM)=0._q
       
       ! quick return if possible
-      DO LN1=1,PP%LMAX
-         IF (PP%LPS(LN1)==LANG_LDAPLUSU(ITYP)) GOTO 100
-      ENDDO
-      RETURN
-
-  100 CONTINUE
+!      DO LN1=1,PP%LMAX
+!         IF (PP%LPS(LN1)==LANG_LDAPLUSU(ITYP)) GOTO 100
+!      ENDDO
+!      RETURN
+!
+!  100 CONTINUE
                                              
 !===================================================================
 !  OCC(LM1,LM2) = SUM_{nk} f_nk <PSI_nk|Y_lm1> > <Y_lm2|PSI_nk> 
@@ -438,17 +682,16 @@
 ! TYPE2: use only  U and J
 !==============================================================
 
-      IF (TYPE_POT == 1) THEN 
-         CALL POT_TYPE1(LMDIM,IATOM,ITYP,LNMAX,PP%LPS,CRHODE,CDIJ,DBLE_LDAU) 
-      ELSEIF (TYPE_POT == 2) THEN  
-         CALL POT_TYPE2(LMDIM,IATOM,ITYP,LNMAX,PP%LPS,CRHODE,CDIJ,DBLE_LDAU)
-      ELSEIF (TYPE_POT == 3) THEN
-         CALL POT_TYPE3(LMDIM,IATOM,ITYP,LNMAX,PP%LPS,CRHODE,CDIJ,DBLE_LDAU)
-      ELSEIF (TYPE_POT == 4) THEN 
-         CALL POT_TYPE4(LMDIM,IATOM,ITYP,LNMAX,PP%LPS,CRHODE,CDIJ,DBLE_LDAU)
-      ELSEIF (TYPE_POT == 5) THEN 
-         CALL POT_TYPE5(LMDIM,IATOM,ITYP,LNMAX,PP%LPS,CDIJ,DBLE_LDAU)
-      ENDIF
+      do luit=1,4
+         IF (TYPE_POT == 1) THEN 
+            CALL POT_TYPE1(LMDIM,IATOM,luit,ITYP,LNMAX,PP%LPS,CRHODE,CDIJ,DBLE_LDAU) 
+         ELSEIF (TYPE_POT == 2) THEN  
+            CALL POT_TYPE2(LMDIM,IATOM,luit,ITYP,LNMAX,PP%LPS,CRHODE,CDIJ,DBLE_LDAU)
+         ELSE
+            write (*,*) "only LDAUTYPE 1 or 2"
+            stop
+         ENDIF
+      end do
 
       RETURN
       END SUBROUTINE LDAPLUSU
@@ -518,17 +761,19 @@
 !
 !**********************************************************************
 
-      SUBROUTINE POT_TYPE1(LMDIM,IATOM,ITYP,LNMAX,L_OF_LN,CRHODE,CDIJ,DBLE_LDAU)
+      SUBROUTINE POT_TYPE1(LMDIM,IATOM,luit,ITYP,LNMAX,L_OF_LN,CRHODE,CDIJ,DBLE_LDAU)
       
       IMPLICIT NONE
       
       INTEGER LMDIM
       INTEGER IATOM
-      INTEGER ITYP
+      INTEGER ITYP, luit, sw
       INTEGER LNMAX,LMMAX
       INTEGER L_OF_LN(LNMAX)
       
       REAL(q) DBLE_LDAU
+      REAL(q) ovlp
+      REAL(q) pot
       
       OVERLAP CRHODE(LMDIM,LMDIM,NCDIJ)
       OVERLAP CDIJ(LMDIM,LMDIM,NCDIJ)
@@ -544,17 +789,19 @@
       
       LMMAX=(MAXVAL(L_OF_LN(1:LNMAX))+1)**2
 
-      CALL COULOMB_INTERACTION(ITYP)      
+      CALL COULOMB_INTERACTION(luit,ITYP)      
             
       DC1=0._q
       POT_U=0._q
             
+      sw=abs(LU_OCCZ(luit,ITYP))
+
       LMN1=0
       DO LN1=1,LNMAX
       L1=L_OF_LN(LN1)
       DO M1=1,2*L1+1
          LMN1=LMN1+1
-         IF (L1 /= LANG_LDAPLUSU(ITYP)) CYCLE
+         IF (L1 /= LANG_LDAPLUSU(luit,ITYP)) CYCLE
 
          LM1=L1**2+M1
          LMN2=0
@@ -562,18 +809,20 @@
          L2=L_OF_LN(LN2)
          DO M2=1,2*L2+1
             LMN2=LMN2+1
-            IF (L2 /= LANG_LDAPLUSU(ITYP)) CYCLE
+            IF (L2 /= LANG_LDAPLUSU(luit,ITYP)) CYCLE
            
             LM2=L2**2+M2
          
             DO ISP=1,NCDIJ
+!LDA+U
+               if (sw.eq.1) then 
                TMP=0._q
                IF (ISP==1.OR.ISP==NCDIJ) THEN
                ! diagonal terms
-                  DO M3=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM3=LANG_LDAPLUSU(ITYP)**2+M3
-                  DO M4=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM4=LANG_LDAPLUSU(ITYP)**2+M4
+                  DO M3=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+                  LM3=LANG_LDAPLUSU(luit,ITYP)**2+M3
+                  DO M4=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+                  LM4=LANG_LDAPLUSU(luit,ITYP)**2+M4
                      ! Hartree terms
                      TMP=TMP+V(M1,M3,M2,M4)*(OCC_MAT(LM4,LM3,1)+OCC_MAT(LM4,LM3,NCDIJ))
                      ! Fock term
@@ -582,31 +831,40 @@
                      ! -U * \Sum_m (\rho^{\alpha\alpha}_mm+\rho^{\beta\beta}_mm)
                      ! +J * \Sum_m (\rho^{isp isp}_mm)
                      IF (LM1==LM2.AND.LM3==LM4) THEN
-                        TMP=TMP-U(ITYP)*(OCC_MAT(LM4,LM3,1)+OCC_MAT(LM4,LM3,NCDIJ))+J(ITYP)*OCC_MAT(LM4,LM3,ISP)                   
+                        TMP=TMP-U(luit,ITYP)*(OCC_MAT(LM4,LM3,1)+OCC_MAT(LM4,LM3,NCDIJ))+J(luit,ITYP)*OCC_MAT(LM4,LM3,ISP)
                      ENDIF
                   ENDDO ! M4
                   ENDDO ! M3
                   ! Remaining terms arising  from the definition of the double counting energy
                   ! +U/2-J/2
-                  IF (LM1==LM2) TMP=TMP+U(ITYP)/2-J(ITYP)/2
+                  IF (LM1==LM2) TMP=TMP+U(luit,ITYP)/2-J(luit,ITYP)/2
                ELSE
                ! off-diagonal terms (exist only in noncollinear case)
-                  DO M3=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM3=LANG_LDAPLUSU(ITYP)**2+M3
-                  DO M4=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM4=LANG_LDAPLUSU(ITYP)**2+M4
+                  DO M3=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+                  LM3=LANG_LDAPLUSU(luit,ITYP)**2+M3
+                  DO M4=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+                  LM4=LANG_LDAPLUSU(luit,ITYP)**2+M4
                      ! Fock term 
                      TMP=TMP-V(M1,M3,M4,M2)*OCC_MAT(LM4,LM3,ISP)
                      ! Terms arising from the definition of the double counting energy
                      ! +J * \Sum_m (\rho^{\alpha\beta c.q. \beta\alpha}_mm)
                      IF (LM1==LM2.AND.LM3==LM4) THEN
-                        TMP=TMP+J(ITYP)*OCC_MAT(LM4,LM3,ISP)
+                        TMP=TMP+J(luit,ITYP)*OCC_MAT(LM4,LM3,ISP)
                      ENDIF
                   ENDDO ! M4
                   ENDDO ! M3                  
                ENDIF
 
                POT_U(LMN1,LMN2,ISP)=TMP*OVERLAP_AE_(LN1,LN2,ITYP)
+
+               end if   ! LDA+U
+
+!NLEP (ONLY collinear; delta (m1,m2) is hardcoded)
+               if (sw.eq.2) then 
+                  ovlp=0._q
+                  if (lm1.eq.lm2) ovlp=OVERLAP_AE_(LN1,LN2,ITYP)
+                  POT_U(LMN1,LMN2,ISP)=U(luit,ITYP)*ovlp
+               end if   ! NLEP
 
                ! To calculate the double counting corrections to
                ! the total energy as calculated from the eigenvalues
@@ -674,14 +932,14 @@
 
       DO ISP=1,NCDIJ
 
-      DO M1=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM1=LANG_LDAPLUSU(ITYP)**2+M1
-      DO M2=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM2=LANG_LDAPLUSU(ITYP)**2+M2
-         DO M3=1,2*LANG_LDAPLUSU(ITYP)+1
-         LM3=LANG_LDAPLUSU(ITYP)**2+M3
-         DO M4=1,2*LANG_LDAPLUSU(ITYP)+1
-         LM4=LANG_LDAPLUSU(ITYP)**2+M4
+      DO M1=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+      LM1=LANG_LDAPLUSU(luit,ITYP)**2+M1
+      DO M2=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+      LM2=LANG_LDAPLUSU(luit,ITYP)**2+M2
+         DO M3=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+         LM3=LANG_LDAPLUSU(luit,ITYP)**2+M3
+         DO M4=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+         LM4=LANG_LDAPLUSU(luit,ITYP)**2+M4
       
          IF (ISP==1.OR.ISP==NCDIJ) THEN
          ! diagonal terms
@@ -708,8 +966,8 @@
       DC3=0._q
       NEL=0._q ; M_x=0._q ; M_y=0._q ; M_z=0._q ; M=0._q
       
-      DO M1=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM1=LANG_LDAPLUSU(ITYP)**2+M1
+      DO M1=1,2*LANG_LDAPLUSU(luit,ITYP)+1
+      LM1=LANG_LDAPLUSU(luit,ITYP)**2+M1
       
          NEL=NEL+OCC_MAT(LM1,LM1,1)+OCC_MAT(LM1,LM1,NCDIJ)
          M_z=M_z+OCC_MAT(LM1,LM1,1)-OCC_MAT(LM1,LM1,NCDIJ)
@@ -730,234 +988,31 @@
       NUP=(NEL+M)/2
       NDW=(NEL-M)/2
             
-      DC3=U(ITYP)*NEL*(NEL-1)/2-J(ITYP)*(NUP*(NUP-1)+NDW*(NDW-1))/2
-      
-      DBLE_LDAU=DC2-DC1-DC3
+      DC3=U(luit,ITYP)*NEL*(NEL-1)/2-J(luit,ITYP)*(NUP*(NUP-1)+NDW*(NDW-1))/2
 
-#ifndef MPI            
-      IF (PRINTOCC /= 0) THEN
-         WRITE(*,*) 'LDA+U energy corrections',IATOM
+      if (sw.gt.1) then
+         if (LU_OCCZ(luit,ITYP).gt.0) DC1=0._q
+         DC2=0._q
+         DC3=0._q
+      end if
+
+      DBLE_LDAU=DBLE_LDAU+DC2-DC1-DC3
+
+!#ifndef MPI            
+      IF (PRINTOCC .gt. 1) THEN
+         WRITE(*,*) 'LDA+U energy corrections: atom ',IATOM, "LDA+U #", luit
          WRITE(*,*) '==================================='
          WRITE(*,*) ' E(e-e)    =',DC2
          WRITE(*,*) ' E(LSDA)   =',-DC3
          WRITE(*,*) ' E(eignv.) =',-DC1
-         WRITE(*,*) ' DBLE_LDAU =',DBLE_LDAU
+         WRITE(*,*) ' DBLE_LDAU =',DC2-DC1-DC3
       ENDIF
-#endif      
+!#endif      
       
       RETURN
       END SUBROUTINE POT_TYPE1
 
 
-!**********************************************************************
-!
-! LDAUTYPE=4
-!
-!**********************************************************************
-
-      SUBROUTINE POT_TYPE4(LMDIM,IATOM,ITYP,LNMAX,L_OF_LN,CRHODE,CDIJ,DBLE_LDAU)
-      
-      IMPLICIT NONE
-      
-      INTEGER LMDIM
-      INTEGER IATOM
-      INTEGER ITYP
-      INTEGER LNMAX,LMMAX
-      INTEGER L_OF_LN(LNMAX)
-      
-      REAL(q) DBLE_LDAU
-      
-      OVERLAP CRHODE(LMDIM,LMDIM,NCDIJ)
-      OVERLAP CDIJ(LMDIM,LMDIM,NCDIJ)
-   
-      INTEGER LN1,LN2,LMN1,LMN2,LM1,LM2,LM3,LM4
-      INTEGER L1,L2,M1,M2,M3,M4
-      INTEGER ISP
-      
-      REAL(q) DC1,DC2,DC3
-      REAL(q) NEL
-      
-      OVERLAP POT_U(LMDIM,LMDIM,NCDIJ),TMP
-      
-      LMMAX=(MAXVAL(L_OF_LN(1:LNMAX))+1)**2
-
-      CALL COULOMB_INTERACTION(ITYP)      
-            
-      DC1=0._q
-      POT_U=0._q
-            
-      LMN1=0
-      DO LN1=1,LNMAX
-      L1=L_OF_LN(LN1)
-      DO M1=1,2*L1+1
-         LMN1=LMN1+1
-         IF (L1 /= LANG_LDAPLUSU(ITYP)) CYCLE
-
-         LM1=L1**2+M1
-         LMN2=0
-         DO LN2=1,LNMAX
-         L2=L_OF_LN(LN2)
-         DO M2=1,2*L2+1
-            LMN2=LMN2+1
-            IF (L2 /= LANG_LDAPLUSU(ITYP)) CYCLE
-           
-            LM2=L2**2+M2
-         
-            DO ISP=1,NCDIJ
-               TMP=0._q
-               IF (ISP==1.OR.ISP==NCDIJ) THEN
-               ! diagonal terms
-                  DO M3=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM3=LANG_LDAPLUSU(ITYP)**2+M3
-                  DO M4=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM4=LANG_LDAPLUSU(ITYP)**2+M4
-                     ! Hartree terms
-                     TMP=TMP+V(M1,M3,M2,M4)*(OCC_MAT(LM4,LM3,1)+OCC_MAT(LM4,LM3,NCDIJ))
-                     ! Fock term
-                     TMP=TMP-V(M1,M3,M4,M2)*OCC_MAT(LM4,LM3,ISP)
-                     ! Terms arising from the definition of the double counting energy
-                     ! -U * \Sum_m (\rho^{\alpha\alpha}_mm+\rho^{\beta\beta}_mm)
-                     ! +J * \Sum_m (\rho^{isp isp}_mm)
-                     IF (LM1==LM2.AND.LM3==LM4) THEN
-                        TMP=TMP-(U(ITYP)-J(ITYP)/2)*(OCC_MAT(LM4,LM3,1)+OCC_MAT(LM4,LM3,NCDIJ))                   
-                     ENDIF
-                  ENDDO ! M4
-                  ENDDO ! M3
-                  ! Remaining terms arising  from the definition of the double counting energy
-                  ! +U/2-J/2
-                  IF (LM1==LM2) TMP=TMP+U(ITYP)/2-J(ITYP)/2
-               ELSE
-               ! off-diagonal terms (exist only in noncollinear case)
-                  DO M3=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM3=LANG_LDAPLUSU(ITYP)**2+M3
-                  DO M4=1,2*LANG_LDAPLUSU(ITYP)+1
-                  LM4=LANG_LDAPLUSU(ITYP)**2+M4
-                     ! Fock term 
-                     TMP=TMP-V(M1,M3,M4,M2)*OCC_MAT(LM4,LM3,ISP)
-                  ENDDO ! M4
-                  ENDDO ! M3                  
-               ENDIF
-
-               POT_U(LMN1,LMN2,ISP)=TMP*OVERLAP_AE_(LN1,LN2,ITYP)
-
-               ! To calculate the double counting corrections to
-               ! the total energy as calculated from the eigenvalues
-#ifndef realmode               
-               DC1=DC1+POT_U(LMN1,LMN2,ISP)*CONJG(CRHODE(LMN1,LMN2,ISP))
-#else
-               DC1=DC1+POT_U(LMN1,LMN2,ISP)*CRHODE(LMN1,LMN2,ISP)
-#endif
-               
-            ENDDO ! ISP
-                  
-         ENDDO ! M2
-         ENDDO ! LN2
-      ENDDO ! M1
-      ENDDO ! LN1
-
-      CDIJ=CDIJ+POT_U
-
-#ifndef MPI
-      IF (PRINTOCC>1) THEN
-         WRITE(*,*) 'potential matrix for atom',IATOM
-         DO ISP=1,NCDIJ
-         WRITE(*,*) 'component',ISP
-         DO LMN1=1,10
-            WRITE(*,'(14F12.6)') (REAL(POT_U(LMN1,LMN2,ISP)),LMN2=1,10)
-         ENDDO
-         WRITE(*,*)
-#ifndef realmode
-         DO LMN1=1,10
-            WRITE(*,'(14F12.6)') (AIMAG(POT_U(LMN1,LMN2,ISP)),LMN2=1,10)
-         ENDDO
-         WRITE(*,*)
-#endif
-         ENDDO
-
-         WRITE(*,*)
-         WRITE(*,*) 'Hamilton matrix for atom',IATOM
-         DO ISP=1,NCDIJ
-         WRITE(*,*) 'component',ISP         
-         DO LMN1=1,10
-            WRITE(*,'(10F12.6)') (REAL(CDIJ(LMN1,LMN2,ISP)),LMN2=1,LMDIM)
-         ENDDO
-         WRITE(*,*)
-#ifndef realmode
-         DO LMN1=1,10
-            WRITE(*,'(10F12.6)') (AIMAG(CDIJ(LMN1,LMN2,ISP)),LMN2=1,LMDIM)
-         ENDDO
-         WRITE(*,*)   
-#endif
-         ENDDO
-      ENDIF
-#endif
-
-! Calculate the remaining terms necessary to determine the 
-! double counting correction to the total energy as calculated
-! from the eigenvalues
-
-      DC2=0._q
-
-      DO ISP=1,NCDIJ
-
-      DO M1=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM1=LANG_LDAPLUSU(ITYP)**2+M1
-      DO M2=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM2=LANG_LDAPLUSU(ITYP)**2+M2
-         DO M3=1,2*LANG_LDAPLUSU(ITYP)+1
-         LM3=LANG_LDAPLUSU(ITYP)**2+M3
-         DO M4=1,2*LANG_LDAPLUSU(ITYP)+1
-         LM4=LANG_LDAPLUSU(ITYP)**2+M4
-      
-         IF (ISP==1.OR.ISP==NCDIJ) THEN
-         ! diagonal terms
-            ! Hartree energy
-            DC2=DC2+V(M1,M3,M2,M4)*OCC_MAT(LM2,LM1,ISP)* &
-           &          (OCC_MAT(LM4,LM3,1)+OCC_MAT(LM4,LM3,NCDIJ))/2
-            ! Fock energy
-            DC2=DC2-V(M1,M3,M4,M2)*OCC_MAT(LM2,LM1,ISP)*OCC_MAT(LM4,LM3,ISP)/2
-         ELSE
-         ! off-diagonal terms
-            ! Fock energy
-#ifndef realmode
-            DC2=DC2-V(M1,M3,M4,M2)*CONJG(OCC_MAT(LM1,LM2,ISP))*OCC_MAT(LM4,LM3,ISP)/2
-#endif
-         ENDIF
-      
-         ENDDO ! M4
-         ENDDO ! M3 
-      ENDDO ! M2
-      ENDDO ! M1
-
-      ENDDO ! ISP      
-      
-      DC3=0._q
-      NEL=0._q
-      
-      DO M1=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM1=LANG_LDAPLUSU(ITYP)**2+M1
-          NEL=NEL+OCC_MAT(LM1,LM1,1)+OCC_MAT(LM1,LM1,NCDIJ)
-      ENDDO ! M1
-      
-      DC3=U(ITYP)*NEL*(NEL-1)/2-J(ITYP)*NEL*(NEL-2)/4
-      
-      DBLE_LDAU=DC2-DC1-DC3
-
-#ifndef MPI            
-      IF (PRINTOCC /= 0) THEN
-         WRITE(*,*) 'LDA+U energy corrections',IATOM
-         WRITE(*,*) '==================================='
-         WRITE(*,*) ' E(e-e)    =',DC2
-         WRITE(*,*) ' E(LSDA)   =',-DC3
-         WRITE(*,*) ' E(eignv.) =',-DC1
-         WRITE(*,*) ' DBLE_LDAU =',DBLE_LDAU
-      ENDIF
-#endif
-
-      RETURN
-      END SUBROUTINE POT_TYPE4
-      
-                                                             
 !**********************************************************************
 !
 ! LDAUTYPE=2
@@ -968,17 +1023,19 @@
 !**********************************************************************
 
 
-      SUBROUTINE POT_TYPE2(LMDIM,IATOM,ITYP,LNMAX,L_OF_LN,CRHODE,CDIJ,DBLE_LDAU)
+      SUBROUTINE POT_TYPE2(LMDIM,IATOM,luit,ITYP,LNMAX,L_OF_LN,CRHODE,CDIJ,DBLE_LDAU)
 
       IMPLICIT NONE
 
       INTEGER LMDIM
       INTEGER IATOM
-      INTEGER ITYP
+      INTEGER ITYP, luit, sw
       INTEGER LNMAX,LMMAX
       INTEGER L_OF_LN(LNMAX)
 
       REAL(q) DBLE_LDAU
+      REAL(q) ovlp
+      REAL(q) pot
 
       OVERLAP CRHODE(LMDIM,LMDIM,NCDIJ)
       OVERLAP CDIJ(LMDIM,LMDIM,NCDIJ)
@@ -1002,12 +1059,14 @@
       DC=0._q
       POT_U= 0._q
 
+      sw=abs(LU_OCCZ(luit,ITYP))
+
       LMN1=0
       DO LN1=1,LNMAX
       L1=L_OF_LN(LN1)
       DO M1=1,2*L1+1
          LMN1=LMN1+1
-         IF (L1 /= LANG_LDAPLUSU(ITYP)) CYCLE
+         IF (L1 /= LANG_LDAPLUSU(luit,ITYP)) CYCLE
 
          LM1=L1**2+M1
          LMN2=0
@@ -1015,18 +1074,28 @@
          L2=L_OF_LN(LN2)
          DO M2=1,2*L2+1
             LMN2=LMN2+1
-            IF (L2 /= LANG_LDAPLUSU(ITYP)) CYCLE
+            IF (L2 /= LANG_LDAPLUSU(luit,ITYP)) CYCLE
            
             LM2=L2**2+M2
             
             DO ISP=1,NCDIJ                                                       
-               TMP= -1._q*(U(ITYP)-J(ITYP))*OCC_MAT(LM1,LM2,ISP)
+!LDA+U
+               if (sw.eq.1) then
+                  TMP= -1._q*(U(luit,ITYP)-J(luit,ITYP))*OCC_MAT(LM1,LM2,ISP)
 
-               IF (M1==M2.AND.(ISP==1.OR.ISP==NCDIJ)) THEN
-                     TMP=TMP+(U(ITYP)-J(ITYP))*0.5_q
-               ENDIF
+                  IF (M1==M2.AND.(ISP==1.OR.ISP==NCDIJ)) THEN
+                     TMP=TMP+(U(luit,ITYP)-J(luit,ITYP))*0.5_q
+                  ENDIF
 
-               POT_U(LMN1,LMN2,ISP) = TMP*OVERLAP_AE_(LN1,LN2,ITYP)
+                  POT_U(LMN1,LMN2,ISP) = TMP*OVERLAP_AE_(LN1,LN2,ITYP)
+               end if
+
+!NLEP (ONLY collinear; delta (m1,m2) is hardcoded)
+               if (sw.eq.2) then
+                  ovlp=0._q
+                  if (lm1.eq.lm2) ovlp=OVERLAP_AE_(LN1,LN2,ITYP)
+                  POT_U(LMN1,LMN2,ISP) = U(luit,ITYP)*ovlp
+               end if
 
                ! double counting correction 
 #ifndef realmode
@@ -1057,308 +1126,51 @@
 
       DC_=0._q
       
-      LMSTART=LANG_LDAPLUSU(ITYP)**2+1
-      LMSTOP=(LANG_LDAPLUSU(ITYP)+1)**2
+      LMSTART=LANG_LDAPLUSU(luit,ITYP)**2+1
+      LMSTOP=(LANG_LDAPLUSU(luit,ITYP)+1)**2
 
       DO ISP=1,NCDIJ
       DO LM1=LMSTART,LMSTOP
       DO LM2=LMSTART,LMSTOP
 #ifndef realmode
-         DC_=DC_-0.5_q*(U(ITYP)-J(ITYP))*OCC_MAT(LM1,LM2,ISP)*CONJG(OCC_MAT(LM1,LM2,ISP))            
+         DC_=DC_-0.5_q*(U(luit,ITYP)-J(luit,ITYP))*OCC_MAT(LM1,LM2,ISP)*CONJG(OCC_MAT(LM1,LM2,ISP))            
 #else
-         DC_=DC_-0.5_q*(U(ITYP)-J(ITYP))*OCC_MAT(LM1,LM2,ISP)*OCC_MAT(LM2,LM1,ISP)            
+         DC_=DC_-0.5_q*(U(luit,ITYP)-J(luit,ITYP))*OCC_MAT(LM1,LM2,ISP)*OCC_MAT(LM2,LM1,ISP)            
 #endif
          IF (LM1==LM2.AND.(ISP==1.OR.ISP==NCDIJ)) THEN
-            DC_=DC_+0.5_q*(U(ITYP)-J(ITYP))*OCC_MAT(LM1,LM1,ISP)
+            DC_=DC_+0.5_q*(U(luit,ITYP)-J(luit,ITYP))*OCC_MAT(LM1,LM1,ISP)
          ENDIF
       ENDDO !(LM1)
       ENDDO !(LM2)
       ENDDO !(ISP)
+
+      if (sw.gt.1) then
+         if (LU_OCCZ(luit,ITYP).gt.0) DC=0._q
+         DC_=0._q
+      end if
      
 !-----------------------------------------------------------------------
-      DBLE_LDAU=DC_-DC
+      DBLE_LDAU=DBLE_LDAU+DC_-DC
 
-#ifndef MPI
-      IF (PRINTOCC /= 0) THEN
+!#ifndef MPI
+      IF (PRINTOCC .gt. 1) THEN
          WRITE(*,*) 'LDA+U double counting'
          WRITE(*,*) ' E(e-e)-E(LSDA) =',DC_
          WRITE(*,*) ' E(DC)          =',-DC
          WRITE(*,*) ' DBLE_LDAU      =',DBLE_LDAU
       ENDIF
-#endif
+!#endif
       RETURN
       END SUBROUTINE POT_TYPE2
 
-
 !**********************************************************************
-!
-! LDAUTYPE=3
-!
-!**********************************************************************
-
-      SUBROUTINE POT_TYPE3(LMDIM,IATOM,ITYP,LNMAX,L_OF_LN,CRHODE,CDIJ,DBLE_LDAU)
-      
-      IMPLICIT NONE
-
-      INTEGER LMDIM
-      INTEGER IATOM
-      INTEGER ITYP
-      INTEGER LNMAX,LMMAX
-      INTEGER L_OF_LN(LNMAX)
-
-      REAL(q) DBLE_LDAU
-
-      OVERLAP CRHODE(LMDIM,LMDIM,NCDIJ)
-      OVERLAP CDIJ(LMDIM,LMDIM,NCDIJ)
-
-      INTEGER LN1,LN2,LMN1,LMN2,LM1,LM2,LMSTART,LMSTOP
-      INTEGER L1,L2,M1,M2
-      INTEGER ISP
-      
-      REAL(q) DC
-      REAL(q) M,M_x,M_y,M_z,NEL,NUP,NDW
-      REAL(q) V(NCDIJ)
-
-      OVERLAP POT_U(LMDIM,LMDIM,NCDIJ)
-
-      DC=0._q
-      POT_U=0._q
-      
-      V=0._q
-      V(1)=U(ITYP)
-      IF (NCDIJ/=1) V(NCDIJ)=J(ITYP)
-      
-      LMN1=0
-      DO LN1=1,LNMAX
-      L1=L_OF_LN(LN1)
-      DO M1=1,2*L1+1
-         LMN1=LMN1+1
-         IF (L1 /= LANG_LDAPLUSU(ITYP)) CYCLE
-
-         LM1=L1**2+M1
-         LMN2=0
-         DO LN2=1,LNMAX
-         L2=L_OF_LN(LN2)
-         DO M2=1,2*L2+1
-            LMN2=LMN2+1
-            IF (L2 /= LANG_LDAPLUSU(ITYP)) CYCLE
-           
-            LM2=L2**2+M2
-            
-            DO ISP=1,NCDIJ,NCDIJ-1                                                       
-               IF (L1==L2.AND.M1==M2) THEN
-                  POT_U(LMN1,LMN2,ISP) = -1._q*V(ISP)*OVERLAP_AE_(LN1,LN2,ITYP)
-                  ! energy correction 
-#ifndef realmode
-                  DC=DC+POT_U(LMN1,LMN2,ISP)*CONJG(CRHODE(LMN1,LMN2,ISP))
-#else
-                  DC=DC+POT_U(LMN1,LMN2,ISP)*CRHODE(LMN2,LMN1,ISP)
-#endif
-               ENDIF
-            ENDDO !(ISP)
-         ENDDO !(M2)
-         ENDDO !(LN2)
-      ENDDO !(M1)
-      ENDDO !(LN1)
-
-      CDIJ=CDIJ+POT_U
-!=======================================================================
-!   test printout                    
-!=======================================================================
-#ifndef MPI
-      IF (PRINTOCC>1) THEN
-         WRITE(*,*) 'potential matrix for atom',IATOM
-         DO ISP=1,NCDIJ
-         WRITE(*,*) 'component',ISP
-         DO LMN1=1,LMDIM
-            WRITE(*,*) 'lmn',LMN1
-#ifndef realmode
-            WRITE(*,*) 'real part'
-#endif
-            WRITE(*,'(20F8.2)') (REAL(POT_U(LMN1,LMN2,ISP)),LMN2=1,LMDIM)
-#ifndef realmode
-            WRITE(*,*) 'imaginary part'
-            WRITE(*,'(20F8.2)') (AIMAG(POT_U(LMN1,LMN2,ISP)),LMN2=1,LMDIM)
-#endif
-         ENDDO
-         WRITE(*,*)
-         ENDDO
-
-         WRITE(*,*)
-         WRITE(*,*)
-         WRITE(*,*) 'Hamilton matrix for atom',IATOM
-         DO ISP=1,NCDIJ
-         WRITE(*,*) 'component',ISP         
-         DO LMN1=1,LMDIM
-            WRITE(*,*) 'lmn',LMN1
-#ifndef realmode
-            WRITE(*,*) 'real part'
-#endif
-            WRITE(*,'(20F8.2)') (REAL(CDIJ(LMN1,LMN2,ISP)),LMN2=1,LMDIM)
-#ifndef realmode
-            WRITE(*,*) 'imaginary part'
-            WRITE(*,'(20F8.2)') (AIMAG(CDIJ(LMN1,LMN2,ISP)),LMN2=1,LMDIM)
-#endif
-         ENDDO
-         WRITE(*,*)   
-         ENDDO
-      ENDIF
-#endif            
-!     DBLE_LDAU=-DC
-      DBLE_LDAU=0._q
-
-      NEL=0._q ; M_x=0._q ; M_y=0._q ; M_z=0._q ; M=0._q
-      
-      DO M1=1,2*LANG_LDAPLUSU(ITYP)+1
-      LM1=LANG_LDAPLUSU(ITYP)**2+M1
-      
-         NEL=NEL+OCC_MAT(LM1,LM1,1)+OCC_MAT(LM1,LM1,NCDIJ)
-         M_z=M_z+OCC_MAT(LM1,LM1,1)-OCC_MAT(LM1,LM1,NCDIJ)
-      
-#ifndef realmode
-         IF (NCDIJ==4) THEN
-            M_x=M_x+2*REAL(OCC_MAT(LM1,LM1,2))
-            M_y=M_y+2*AIMAG(OCC_MAT(LM1,LM1,2))
-         ENDIF
-#endif
-      ENDDO ! M1
-      
-      M=M_z
-      IF (NCDIJ==4) THEN
-         M=SQRT(M_x*M_x+M_y*M_y+M_z*M_z)
-      ENDIF
-      
-      NUP=(NEL+M)/2
-      NDW=(NEL-M)/2
-
-#ifndef MPI
-      IF (PRINTOCC /= 0) THEN
-         WRITE(*,*) 'LDA+U double counting'
-!        WRITE(*,*) ' DBLE_LDAU           =',DBLE_LDAU
-         WRITE(*,*)
-         WRITE(*,*) ' number of electrons =',NEL
-         WRITE(*,*) ' magnetization       =',M
-      ENDIF
-#endif
-
-      RETURN
-      END SUBROUTINE POT_TYPE3
-      
-!**********************************************************************
-!
-! LDAUTYPE=5, Orbital polarization only 
-!
-!**********************************************************************
-
-      SUBROUTINE POT_TYPE5(LMDIM,IATOM,ITYP,LNMAX,L_OF_LN,CDIJ,DBLE_LDAU)
-
-      USE relativistic
-      
-      IMPLICIT NONE
-      
-      INTEGER LMDIM
-      INTEGER IATOM
-      INTEGER ITYP
-      INTEGER LNMAX,LMMAX
-      INTEGER L_OF_LN(LNMAX)
-      
-      REAL(q) DBLE_LDAU
-      
-      OVERLAP CRHODE(LMDIM,LMDIM,NCDIJ)
-      OVERLAP CDIJ(LMDIM,LMDIM,NCDIJ)
-   
-      INTEGER LN1,LN2,LMN1,LMN2
-      INTEGER L,L1,L2,M1,M2
-      INTEGER ISP,I
-      
-      REAL(q) L_MOM(3),S_MOM(3),SNORM,L_PROJ
-      
-      COMPLEX(q) , ALLOCATABLE :: L_OP(:,:,:),DUMMY(:,:,:)
-      COMPLEX(q) , ALLOCATABLE :: L_OP_PROJ(:,:)
-            
-      OVERLAP POT_U(LMDIM,LMDIM,NCDIJ)
-      
-! Get me the L operator
-      L=LANG_LDAPLUSU(ITYP)
-      ALLOCATE(L_OP(2*L+1,2*L+1,3),DUMMY(2*L+1,2*L+1,4))
-      L_OP=(0._q,0._q)
-      CALL SETUP_LS(L,0._q,0._q,L_OP(1:2*L+1,1:2*L+1,1:3),DUMMY(1:2*L+1,1:2*L+1,1:4))
-! Calculate orbital moment
-      L_MOM=0._q
-      DO ISP=1,NCDIJ,NCDIJ-1
-      DO I=1,3
-         DO M1=1,2*L+1
-         DO M2=1,2*L+1
-         ! beware of the reversed storage convention of OCC_MAT
-            L_MOM(I)=L_MOM(I)+L_OP(M1,M2,I)*OCC_MAT(L*L+M1,L*L+M2,ISP)
-         ENDDO
-         ENDDO
-      ENDDO
-      ENDDO      
-! Calculate spin moment
-      S_MOM=0._q
-      DO M1=1,2*L+1
-         S_MOM(1)=S_MOM(1)+(OCC_MAT(L*L+M1,L*L+M1,3)+OCC_MAT(L*L+M1,L*L+M1,2))
-         S_MOM(2)=S_MOM(2)+(OCC_MAT(L*L+M1,L*L+M1,2)-OCC_MAT(L*L+M1,L*L+M1,3))*(0._q,1._q)
-         S_MOM(3)=S_MOM(3)+(OCC_MAT(L*L+M1,L*L+M1,1)-OCC_MAT(L*L+M1,L*L+M1,4))
-      ENDDO
-      SNORM=SQRT(S_MOM(1)*S_MOM(1)+S_MOM(2)*S_MOM(2)+S_MOM(3)*S_MOM(3))
-! Calculate projection of orbital moment on local spin quantization axis
-      L_PROJ=(L_MOM(1)*S_MOM(1)+L_MOM(2)*S_MOM(2)+L_MOM(3)*S_MOM(3))/SNORM      
-! Construct L operator along spin direction
-      ALLOCATE(L_OP_PROJ(2*L+1,2*L+1))
-      L_OP_PROJ=(0._q,0._q)
-      DO M1=1,2*L+1
-      DO M2=1,2*L+1
-         L_OP_PROJ(M1,M2)=L_OP_PROJ(M1,M2)- &
-        &   (L_OP(M1,M2,1)*S_MOM(1)+L_OP(M1,M2,2)*S_MOM(2)+L_OP(M1,M2,3)*S_MOM(3))/SNORM
-      ENDDO
-      ENDDO
-! Construct spin polarizing potential
-      POT_U=0._q
-            
-      LMN1=0
-      DO LN1=1,LNMAX
-      L1=L_OF_LN(LN1)
-      DO M1=1,2*L1+1
-         LMN1=LMN1+1
-         IF (L1 /= LANG_LDAPLUSU(ITYP)) CYCLE
-
-         LMN2=0
-         DO LN2=1,LNMAX
-         L2=L_OF_LN(LN2)
-         DO M2=1,2*L2+1
-            LMN2=LMN2+1
-            IF (L2 /= LANG_LDAPLUSU(ITYP)) CYCLE
-           
-            DO ISP=1,NCDIJ,NCDIJ-1
-
-               POT_U(LMN1,LMN2,ISP)=U(ITYP)*L_PROJ*L_OP_PROJ(M2,M1)*OVERLAP_AE_(LN1,LN2,ITYP)
-
-            ENDDO ! ISP
-                  
-         ENDDO ! M2
-         ENDDO ! LN2
-      ENDDO ! M1
-      ENDDO ! LN1
-
-      CDIJ=CDIJ+POT_U
-      
-      DBLE_LDAU=0._q
-
-      DEALLOCATE(L_OP,DUMMY,L_OP_PROJ)
-      
-      RETURN
-      END SUBROUTINE POT_TYPE5
-
-      
-      SUBROUTINE COULOMB_INTERACTION(ITYP)
+      SUBROUTINE COULOMB_INTERACTION(luit,ITYP)
       
       USE prec
       
       IMPLICIT NONE
       
-      INTEGER ITYP
+      INTEGER ITYP, luit
       INTEGER L,M,M_
       INTEGER M1,M2,M3,M4,K,MA,MB,MC,MD
       
@@ -1368,7 +1180,7 @@
       REAL(q), ALLOCATABLE:: CGMAT(:,:,:),F(:)
       COMPLEX(q), ALLOCATABLE :: U_R2C(:,:),U_(:)
 
-      L=LANG_LDAPLUSU(ITYP)
+      L=LANG_LDAPLUSU(luit,ITYP)
 
       ALLOCATE(U_R2C(2*L+1,2*L+1))      
       U_R2C=(0._q,0._q)          
@@ -1400,18 +1212,18 @@
       F=0._q
       SELECT CASE(L)
       CASE(1)
-         F(0)=U(ITYP)
-         F(2)=5*J(ITYP)
+         F(0)=U(luit,ITYP)
+         F(2)=5*J(luit,ITYP)
       CASE(2)
          RAT42=0.625_q
-         F(0)=U(ITYP)
-         F(2)=14._q/(1+RAT42)*J(ITYP)
+         F(0)=U(luit,ITYP)
+         F(2)=14._q/(1+RAT42)*J(luit,ITYP)
          F(4)=RAT42*F(2)
       CASE(3)
          RAT42=0.668_q
          RAT62=0.494_q
-         F(0)=U(ITYP)
-         F(2)=6435._q/(286._q+195._q*RAT42+250._q*RAT62)*J(ITYP)
+         F(0)=U(luit,ITYP)
+         F(2)=6435._q/(286._q+195._q*RAT42+250._q*RAT62)*J(luit,ITYP)
          F(4)=RAT42*F(2)
          F(6)=RAT62*F(2)
       END SELECT
@@ -1532,27 +1344,32 @@
 
       INTEGER IU6
       INTEGER NIONS
-      INTEGER I,ITYP(NIONS),ISP
+      INTEGER I,ITYP(NIONS),ISP, luit
       INTEGER LM1,LM2,LMSTART,LMSTOP
       
       INTEGER L,M,INFO,J,K
       REAL(q), ALLOCATABLE :: W(:),RWORK(:)
       COMPLEX(q), ALLOCATABLE :: TMP(:,:),WORK(:)
 
+      OCC_MAT_AL2(:,:,:,:)=OCC_MAT_ALL(:,:,:,:)
+
+      do luit=1,4
+         OCC_MAT_ALL(:,:,:,:)=OCC_MAT_AL2(:,:,:,:)
 #ifdef realmode
-      CALLMPI( M_sum_d( WDES%COMM, OCC_MAT_ALL, LMMAX_*LMMAX_*NCDIJ*NIONS))
+         CALLMPI( M_sum_d( WDES%COMM, OCC_MAT_ALL, LMMAX_*LMMAX_*NCDIJ*NIONS))
 #else
-      CALLMPI( M_sum_d( WDES%COMM, OCC_MAT_ALL, 2*LMMAX_*LMMAX_*NCDIJ*NIONS))
+         CALLMPI( M_sum_d( WDES%COMM, OCC_MAT_ALL, 2*LMMAX_*LMMAX_*NCDIJ*NIONS))
 #endif
             
       IF (PRINTOCC /= 0 .AND. IU6>=0) THEN
          DO I=1,NIONS
-            IF (LANG_LDAPLUSU(ITYP(I))<0) CYCLE
+            IF (LANG_LDAPLUSU(luit,ITYP(I))<0) CYCLE
 
-            LMSTART=LANG_LDAPLUSU(ITYP(I))**2+1
-            LMSTOP=(LANG_LDAPLUSU(ITYP(I))+1)**2
+            LMSTART=LANG_LDAPLUSU(luit,ITYP(I))**2+1
+            LMSTOP=(LANG_LDAPLUSU(luit,ITYP(I))+1)**2
 
-            WRITE(IU6,10) I,ITYP(I),LANG_LDAPLUSU(ITYP(I))
+            WRITE(IU6,*)
+            WRITE(IU6,10) I,ITYP(I),LANG_LDAPLUSU(luit,ITYP(I)), luit
             WRITE(IU6,*)
             WRITE(IU6,*) 'onsite density matrix'
             WRITE(IU6,*)
@@ -1560,41 +1377,41 @@
                WRITE(IU6,20) ISP
                WRITE(IU6,*)
                DO LM1=LMSTART,LMSTOP
-               SELECT CASE(LANG_LDAPLUSU(ITYP(I)))
+               SELECT CASE(LANG_LDAPLUSU(luit,ITYP(I)))
                CASE(0)
-#ifdef realmode   
+              #ifdef realmode   
                   WRITE(IU6,'(F8.4)') (OCC_MAT_ALL(LM1,LM2,ISP,I), LM2=LMSTART,LMSTOP)
-#else
+              #else
                   WRITE(IU6,'(F8.4,4X,F8.4)')  (REAL(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP), &
                  &                              (AIMAG(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP)
-#endif
+              #endif
                CASE(1)
-#ifdef realmode   
+              #ifdef realmode   
                   WRITE(IU6,'(3F8.4)') (OCC_MAT_ALL(LM1,LM2,ISP,I), LM2=LMSTART,LMSTOP)
-#else
+              #else
                   WRITE(IU6,'(3F8.4,4X,3F8.4)')  (REAL(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP), &
                  &                                (AIMAG(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP)
-#endif
+              #endif
                CASE(2)
-#ifdef realmode
+              #ifdef realmode
                   WRITE(IU6,'(5F8.4)') (OCC_MAT_ALL(LM1,LM2,ISP,I), LM2=LMSTART,LMSTOP)
-#else
+              #else
                   WRITE(IU6,'(5F8.4,4X,5F8.4)')  (REAL(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP), &
                  &                                (AIMAG(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP)
-#endif               
+              #endif               
                CASE(3)
-#ifdef realmode   
+              #ifdef realmode   
                   WRITE(IU6,'(7F8.4)') (OCC_MAT_ALL(LM1,LM2,ISP,I), LM2=LMSTART,LMSTOP)
-#else
+              #else
                   WRITE(IU6,'(7F8.4,4X,7F8.4)')  (REAL(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP), &
                  &                                (AIMAG(OCC_MAT_ALL(LM1,LM2,ISP,I)), LM2=LMSTART,LMSTOP)
-#endif               
+              #endif               
                END SELECT
                ENDDO
                WRITE(IU6,*)
             ENDDO
             
-            L=LANG_LDAPLUSU(ITYP(I))
+            L=LANG_LDAPLUSU(luit,ITYP(I))
             M=L*2+1
             
             ALLOCATE(TMP(2*M,2*M),W(2*M),WORK(MAX(1,4*M-1)),RWORK(MAX(1,6*M-2)))
@@ -1616,7 +1433,7 @@
             WRITE(IU6,*) 'occupancies and eigenvectors'
             WRITE(IU6,*)
             DO LM1=1,2*M
-               SELECT CASE(LANG_LDAPLUSU(ITYP(I)))
+               SELECT CASE(LANG_LDAPLUSU(luit,ITYP(I)))
                CASE(0)
                  WRITE(IU6,'("  o =",F8.4,"  v =",2F8.4,4X,2F8.4)') &
                  &       W(LM1),(REAL(TMP(LM2,LM1)), LM2=1,2*M),(AIMAG(TMP(LM2,LM1)), LM2=1,2*M)
@@ -1637,9 +1454,11 @@
          ENDDO      
       ENDIF
 
+      end do
+
       OCC_MAT_ALL=0._q
 
-   10 FORMAT('atom =',I4,'  type =',I3,'  l =',I2)
+   10 FORMAT('atom =',I4,'  type =',I3,'  l =',I2, '  LDA+U#', I2)
    20 FORMAT('spin component ',I2)
 
       RETURN
